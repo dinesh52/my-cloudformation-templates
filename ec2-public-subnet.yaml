@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Resources:
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0889a44b331db0194
+      InstanceType: t2.micro
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !ImportValue "us-east-1-MyVpc-PublicSubnet0"
+          GroupSet:
+            - !Ref MySecurityGroup
+      Tags:
+        - Key: Name
+          Value: 'MyServer'
+
+  MySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP and HTTPS access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      VpcId: !ImportValue "us-east-1-MyVpc-VPC"
