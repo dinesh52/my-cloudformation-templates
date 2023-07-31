@@ -1,38 +1,127 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: AWS CloudFormation template for SQL Server to Amazon S3 replication with DMS
 
 Parameters:
+  ExistsDMSVPCRole:
+    Default: "N"
+    Description: "If the dms-vpc-role exists in your account, please enter Y, else enter N"
+    Type: String
+    MinLength: "1"
+    MaxLength: "1"
+    AllowedPattern: "[YN]"
+    ConstraintDescription: Permitted value is Y or N.
+  ExistsDMSCloudwatchRole:
+    Default: "N"
+    Description: >-
+      If the dms-cloudwatch-logs-role exists in your account, please enter Y,
+      else enter N
+    Type: String
+    MinLength: "1"
+    MaxLength: "1"
+    AllowedPattern: "[YN]"
+    ConstraintDescription: Permitted value is Y or N.
   SourceEndpoint:
     Type: String
     Description: SQL Server endpoint details (e.g., endpoint, port, username, password)
+    Default: sqldatabase.cdh9x9twxviv.us-east-1.rds.amazonaws.com
   SourcePort:
     Type: Number
     Description: SQL Server endpoint details (e.g., endpoint, port, username, password)
+    Default: 1433
   SourceUsername:
     Type: String
     Description: SQL Server endpoint details (e.g., endpoint, port, username, password)
+    Default: admin
   SourcePassword:
     Type: String
     Description: SQL Server endpoint details (e.g., endpoint, port, username, password)
+    Default: password
   SourceDatabasename:
     Type: String
     Description: SQL Server endpoint details (e.g., endpoint, port, username, password)
-  TargetBucket:
+    Default: test_db
+  TargetS3Bucket:
     Type: String
-    Description: Amazon S3 bucket name for storing Parquet files
+    Description: S3 Bucket Name
+
+Conditions:
+  NotExistsDMSVPCRole: !Equals
+    - !Ref ExistsDMSVPCRole
+    - "N"
+  NotExistsDMSCloudwatchRole: !Equals
+    - !Ref ExistsDMSCloudwatchRole
+    - "N"
 
 Resources:
+  DMSCloudwatchRole:
+    Type: "AWS::IAM::Role"
+    Condition: NotExistsDMSCloudwatchRole
+    Properties:
+      RoleName: dms-cloudwatch-logs-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonDMSCloudWatchLogsRole"
+      Path: /
+  DMSVPCRole:
+    Type: "AWS::IAM::Role"
+    Condition: NotExistsDMSVPCRole
+    Properties:
+      RoleName: "dms-vpc-role"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Principal:
+              Service: "dms.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole"
+  S3TargetDMSRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: dms-s3-target-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: S3AccessForDMSPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                Resource:
+                  - !Sub arn:aws:s3:::${TargetS3Bucket}
+                  - !Sub arn:aws:s3:::${TargetS3Bucket}/*
+              - Effect: Allow
+                Action: "s3:ListBucket"
+                Resource: !Sub arn:aws:s3:::${TargetS3Bucket}
   DMSReplicationInstance:
     Type: AWS::DMS::ReplicationInstance
     Properties:
-      ReplicationInstanceIdentifier: MyDMSReplicationInstance
+      ReplicationInstanceIdentifier: SQLServerS3RepInstanceV2
       ReplicationInstanceClass: dms.t3.micro
-      AllocatedStorage: 50
-      EngineVersion: 3.5.1
-      PubliclyAccessible: false
-      MultiAZ: false
-  
-  DMSReplicationSourceEndpoint:
+      PubliclyAccessible: true
+    DependsOn: DMSVPCRole
+  SQLServerSourceEndpoint:
     Type: AWS::DMS::Endpoint
     Properties:
       EndpointIdentifier: SourceSQLServer
@@ -43,121 +132,37 @@ Resources:
       ServerName: !Ref SourceEndpoint
       Port: !Ref SourcePort
       DatabaseName: !Ref SourceDatabasename
-  
-  DMSReplicationTargetEndpoint:
-    Type: AWS::DMS::Endpoint
+    DependsOn: DMSReplicationInstance
+  S3TargetEndpoint:
+    Type: "AWS::DMS::Endpoint"
     Properties:
-      EndpointIdentifier: TargetS3Bucket
       EndpointType: target
-      EngineName: s3
+      EngineName: S3
+      ExtraConnectionAttributes: addColumnName=true
       S3Settings:
-        ServiceAccessRoleArn: arn:aws:iam::${AWS::AccountId}:role/DMSTargetS3Role
-        BucketName: !Ref TargetBucket
-
-  DMSTargetS3Role:
-    Type: AWS::IAM::Role
+        BucketName: !Ref TargetS3Bucket
+        ServiceAccessRoleArn: !GetAtt "S3TargetDMSRole.Arn"
+    DependsOn:
+      - DMSReplicationInstance
+      - S3TargetDMSRole
+  DMSReplicationTask:
+    Type: "AWS::DMS::ReplicationTask"
     Properties:
-      RoleName: DMSTargetS3RoleName
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: dms.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: DMSTargetS3Policy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:DeleteObject
-                  - s3:PutObjectTagging
-                Resource: "arn:aws:s3:::YourS3BucketName/*"
-              - Effect: Allow
-                Action: "s3:ListBucket"
-                Resource: "arn:aws:s3:::YourS3BucketName"
-
-
-
-#   DMSRole:
-#     Type: AWS::IAM::Role
-#     Properties:
-#       AssumeRolePolicyDocument:
-#         Version: '2012-10-17'
-#         Statement:
-#           - Effect: Allow
-#             Principal:
-#               Service: dms.amazonaws.com
-#             Action: sts:AssumeRole
-#       ManagedPolicyArns:
-#         - arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole
-#       Policies:
-#         - PolicyName: DMSAccessS3
-#           PolicyDocument:
-#             Version: '2012-10-17'
-#             Statement:
-#               - Effect: Allow
-#                 Action:
-#                   - s3:ListBucket
-#                   - s3:GetBucketLocation
-#                 Resource: !Sub "arn:aws:s3:::${TargetBucket}"
-#               - Effect: Allow
-#                 Action:
-#                   - s3:PutObject
-#                   - s3:DeleteObject
-#                   - s3:GetObject
-#                 Resource: !Sub "arn:aws:s3:::${TargetBucket}/*"
-
-#   DMSReplicationTask:
-#     Type: AWS::DMS::ReplicationTask
-#     Properties:
-#       SourceEndpointArn: !Sub "arn:aws:dms:${AWS::Region}:${AWS::AccountId}:endpoint:${DMSReplicationInstance}:${SourceEndpoint}"
-#       TargetEndpointArn: !Sub "arn:aws:dms:${AWS::Region}:${AWS::AccountId}:endpoint:s3-sa-east-1"
-#       MigrationType: "full-load-and-cdc"
-#       TableMappings: |
-#         {
-#           "rules": [
-#             {
-#               "rule-type": "selection",
-#               "rule-id": "1",
-#               "rule-name": "1",
-#               "object-locator": {
-#                 "schema-name": "%",
-#                 "table-name": "%"
-#               },
-#               "rule-action": "include"
-#             }
-#           ]
-#         }
-#       ReplicationTaskSettings: "{\"TargetMetadata\": {\"BucketName\": \"${TargetBucket}\",\"Format\": \"parquet\"}}"
-
-#   LambdaFunction:
-#     Type: AWS::Lambda::Function
-#     Properties:
-#       FunctionName: DMSReplicationTrigger
-#       Runtime: python3.8
-#       Timeout: 60
-#       Handler: index.lambda_handler
-#       Role: !GetAtt DMSRole.Arn
-#       Code:
-#         ZipFile: |
-#           import boto3
-
-#           def lambda_handler(event, context):
-#               dms_client = boto3.client('dms', region_name='us-east-1')
-#               response = dms_client.start_replication_task(
-#                   ReplicationTaskArn='ARN_OF_DMS_REPLICATION_TASK',
-#                   StartReplicationTaskType='start-replication'
-#               )
-#               return response
-
-# Outputs:
-#   DMSReplicationInstanceEndpoint:
-#     Description: SQL Server replication instance endpoint
-#     Value: !GetAtt DMSReplicationInstance.Endpoint.Address
-#   LambdaFunctionArn:
-#     Description: Lambda function ARN for triggering DMS replication
-#     Value: !GetAtt LambdaFunction.Arn
+      MigrationType: "full-load-and-cdc"
+      ReplicationInstanceArn: !Ref DMSReplicationInstance
+      SourceEndpointArn: !Ref SQLServerSourceEndpoint
+      TargetEndpointArn: !Ref S3TargetEndpoint
+      ReplicationTaskSettings: >-
+        { "Logging" : { "EnableLogging" : true, "LogComponents": [ { "Id" :
+        "SOURCE_UNLOAD", "Severity" : "LOGGER_SEVERITY_DEFAULT" }, { "Id" :
+        "SOURCE_CAPTURE", "Severity" : "LOGGER_SEVERITY_DEFAULT" }, { "Id" :
+        "TARGET_LOAD", "Severity" : "LOGGER_SEVERITY_DEFAULT" }, { "Id" :
+        "TARGET_APPLY", "Severity" : "LOGGER_SEVERITY_DEFAULT" } ] } }
+      TableMappings: >-
+        { "rules": [ { "rule-type" : "selection", "rule-id" : "1", "rule-name" :
+        "1", "object-locator" : { "schema-name" : "dbo", "table-name" :
+        "Employees" }, "rule-action" : "include" } ] }
+    DependsOn:
+      - SQLServerSourceEndpoint
+      - S3TargetEndpoint
+      - DMSReplicationInstance
