@@ -45,12 +45,8 @@ Parameters:
     Description: S3 Bucket Name
 
 Conditions:
-  NotExistsDMSVPCRole: !Equals
-    - !Ref ExistsDMSVPCRole
-    - "N"
-  NotExistsDMSCloudwatchRole: !Equals
-    - !Ref ExistsDMSCloudwatchRole
-    - "N"
+  NotExistsDMSVPCRole: !Equals [!Ref ExistsDMSVPCRole, "N"]
+  NotExistsDMSCloudwatchRole: !Equals [!Ref ExistsDMSCloudwatchRole, "N"]
 
 Resources:
   DMSCloudwatchRole:
